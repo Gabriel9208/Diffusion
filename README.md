@@ -16,7 +16,6 @@ A conditional image generation pipeline built on **DDPM** (training) + **DDIM** 
 - [Training](#training)
 - [Inference (DDIM)](#inference-ddim)
 - [Data Preprocessing](#data-preprocessing)
-- [Results](#results)
 - [Experiments & Ablations](#experiments--ablations)
 - [Installation](#installation)
 - [Usage](#usage)
