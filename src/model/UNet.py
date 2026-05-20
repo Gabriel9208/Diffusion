@@ -24,13 +24,12 @@ class Block(nn.Module):
         self.silu = nn.SiLU()
         
 
-    def forward(self, x, time_emb=None):
+    def forward(self, x, emb=None):
         x = self.conv(x)
         x = self.gn(x)
-
-        if time_emb is not None:
-            x = x + time_emb
-
+        if emb is not None:
+            gamma, beta = emb
+            x = (1 + gamma) * x + beta
         x = self.silu(x)
 
         return x
@@ -45,10 +44,12 @@ class ResBlock(nn.Module):
             nn.Linear(time_emb_dim, out_channels)
         )
 
-        self.label_film = nn.Sequential(
+        self.label_mlp = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(label_emb_dim, 2 * out_channels) 
+            nn.Linear(label_emb_dim, out_channels)
         )
+
+        self.label_film = nn.Linear(out_channels, 2 * out_channels) 
 
         self.block1 = Block(in_channels, out_channels)
         self.block2 = Block(out_channels, out_channels)
@@ -57,12 +58,13 @@ class ResBlock(nn.Module):
 
     def forward(self, x, time_emb, label_emb):  
 
-        t = self.time_mlp(time_emb).unsqueeze(2).unsqueeze(3)
-        gamma_beta = self.label_film(label_emb).unsqueeze(2).unsqueeze(3)
+        t = self.time_mlp(time_emb)
+        l = self.label_mlp(label_emb)
+        emb = t + l
+        gamma_beta = self.label_film(emb).unsqueeze(2).unsqueeze(3)
         gamma, beta = gamma_beta.chunk(2, dim=1)
             
-        out = self.block1(x, t)
-        out = (1 + gamma) * out + beta
+        out = self.block1(x, (gamma, beta))
         out = self.block2(out)
         out = out + self.shortcut(x)
         return out
