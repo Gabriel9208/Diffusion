@@ -18,6 +18,7 @@ from evaluator import evaluation_model
 @dataclass
 class RunnerContext:
     model: torch.nn.Module | None = None
+    ema_model: torch.nn.Module | None = None
     condition_encoder: torch.nn.Module | None = None
     optimizer: torch.optim.Optimizer | None = None
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
@@ -31,28 +32,33 @@ class RunnerContext:
 class Runner:
     def __init__(self, 
                 model,
+                ema_model,
                 condition_encoder: BaseConditionEncoder,
                 train_loader,
                 val_loader,
                 #test_loader,
                 optimizer,
                 scheduler,
+                scaler,
                 device,
                 total_epoch,
                 validate_every_epoch,
                 cfg_p_uncond,
+                ema_beta,
                 callbacks = None,
                 resume = False,
                 resume_path = None,
                 save_img_dir=None
                 ):
         self.model = model
+        self.ema_model = ema_model
         self.condition_encoder = condition_encoder
         self.train_loader = train_loader
         self.valid_loader = val_loader
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.device = device
+        self.scaler = scaler
         self.callbacks = callbacks or []
         self.fid = FrechetInceptionDistance(feature=2048).to(self.device)
         
@@ -62,9 +68,12 @@ class Runner:
         self.total_epoch = total_epoch
         self.cfg_p_uncond = cfg_p_uncond
         self.validate_every_epoch = validate_every_epoch
+        self.ema_beta = ema_beta
+        self._ema_step = 0
 
         self.context = RunnerContext(
             model=model, 
+            ema_model=ema_model,
             condition_encoder=condition_encoder,
             optimizer=optimizer, 
             scheduler=scheduler, 
@@ -80,6 +89,14 @@ class Runner:
 
         if resume:
             self.load_checkpoint(resume_path)
+        elif self.ema_model is not None:
+            with torch.no_grad():
+                for ema_param, model_param in zip(self.ema_model.parameters(), self.model.parameters()):
+                    ema_param.copy_(model_param)
+
+    @property
+    def inference_model(self):
+        return self.ema_model if self.ema_model is not None else self.model
 
     def _emit(self, hook_name, *args, **kwargs):
         for callback in self.callbacks:
@@ -134,6 +151,10 @@ class Runner:
 
     def _train(self):
         total_loss = 0
+
+        self.model.train()
+        if self.ema_model is not None:
+            self.ema_model.eval()
         
         for x_0, text_prompt in tqdm.tqdm(self.train_loader):
             x_0 = x_0.to(self.device)
@@ -141,13 +162,27 @@ class Runner:
             
             cond_emb = self._embed_text(text_prompt)
                 
-            loss = self._forward(x_0, cond_emb)
+            with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+                loss = self._forward(x_0, cond_emb)
+            
             total_loss += loss.item()
 
-            self._backward(loss)
+            self.optimizer.zero_grad()
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
-            
+            if self.ema_model is not None:
+                with torch.no_grad():
+                    self._ema_step += 1
+                    effective_beta = min(self.ema_beta, (1 + self._ema_step) / (10 + self._ema_step))
+                    for ema_param, model_param in zip(self.ema_model.parameters(), self.model.parameters()):
+                        ema_param.copy_(effective_beta * ema_param + (1.0 - effective_beta) * model_param)
+                    for ema_param, model_param in zip(self.ema_model.buffers(), self.model.buffers()):
+                        ema_param.copy_(model_param)
+        
             self._emit("on_step_end", self.context)
+
         
         total_loss /= len(self.train_loader)
         self.context.train_loss = total_loss
@@ -169,7 +204,7 @@ class Runner:
             loss = self._forward(x_0, cond_emb)
             total_loss += loss.item()
             
-            imgs, _ = self.model.sample(x_0.shape[0], cond_emb)
+            imgs, _ = self.inference_model.sample(x_0.shape[0], cond_emb)
 
             x_0 = self._denormalize(x_0).cpu()
             imgs = self._denormalize(imgs).cpu()
@@ -193,6 +228,8 @@ class Runner:
     def load_checkpoint(self, path):
         checkpoint = torch.load(path)
         self.model.load_state_dict(checkpoint['model'])
+        if self.ema_model is not None and checkpoint.get('ema_model') is not None:
+            self.ema_model.load_state_dict(checkpoint['ema_model'])
         if 'condition_encoder' in checkpoint and checkpoint['condition_encoder'] is not None:
             self.condition_encoder.load_state_dict(checkpoint['condition_encoder'])
             print("condition_encoder loaded successfully")
@@ -232,7 +269,7 @@ class Runner:
         N = len(text_prompts)
 
         cond_emb = self._embed_text(text_prompts, training=False)
-        imgs, _ = self.model.sample(1, cond_emb)
+        imgs, _ = self.inference_model.sample(1, cond_emb)
         onehot = self._embed_text(text_prompts, training=False, pure=True)
         acc = self.evaluator.eval(imgs, onehot)
 
@@ -242,7 +279,7 @@ class Runner:
         label_emb = self._embed_text(prompts, training=False)
         print(f"cond_emb: sum={label_emb.sum().item():.4f}, std={label_emb.std().item():.4f}")
 
-        imgs, _ = self.model.sample(1, label_emb)
+        imgs, _ = self.inference_model.sample(1, label_emb)
 
         save_image(
                     imgs.cpu(), 
@@ -254,14 +291,14 @@ class Runner:
 
     def uncoinditional_sample(self):
 
-        imgs, _ = self.model.sample(1, torch.zeros((1, 256), device=self.device))
+        imgs, _ = self.inference_model.sample(1, torch.zeros((1, 256), device=self.device))
         return self._denormalize(imgs[0]).permute(1, 2, 0).cpu()
 
     def make_grid_img(self, prompts, file_name):
         label_emb = self._embed_text(prompts, training=False)
         print(f"cond_emb: sum={label_emb.sum().item():.4f}, std={label_emb.std().item():.4f}")
 
-        imgs, _ = self.model.sample(len(prompts), label_emb)
+        imgs, _ = self.inference_model.sample(len(prompts), label_emb)
         for i, img in enumerate(imgs):
             save_image(
                 img.cpu(),
@@ -286,7 +323,7 @@ class Runner:
         label_emb = self._embed_text(prompts, training=False)
         print(f"cond_emb: sum={label_emb.sum().item():.4f}, std={label_emb.std().item():.4f}")
 
-        imgs, denoise_process = self.model.sample(len(prompts), label_emb)
+        imgs, denoise_process = self.inference_model.sample(len(prompts), label_emb)
 
         denoise_process = make_grid(denoise_process.cpu(), nrow=8, padding=2, normalize=True, value_range=(-1, 1))
         save_image(

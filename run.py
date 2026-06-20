@@ -61,6 +61,9 @@ def make_grid(runner, file_name):
 def main(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
+    
+    if device == 'cuda':
+        torch.backends.cudnn.benchmark = True
 
     transform = transforms.Compose([
         LetterBox(target_size=(64, 64), fill_color=(255, 255, 255)),
@@ -79,6 +82,8 @@ def main(args):
         batch_size=args.batch_size, 
         shuffle=True,
         collate_fn=collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True,
     )
     
     val_dataset = ICLVERDataset(val_dict, "iclevr", transforms=transform)
@@ -87,6 +92,8 @@ def main(args):
         batch_size=args.batch_size, 
         shuffle=False,
         collate_fn=collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True,
     )
     
     model = DDPM(
@@ -97,14 +104,28 @@ def main(args):
         cfg_scale=args.cfg_scale,
     ).to(device)
 
+    ema_model = None
+    if args.use_ema:
+        ema_model = DDPM(
+            beta_start=args.beta_start,
+            beta_end=args.beta_end,
+            T=args.T,
+            device=device,
+            cfg_scale=args.cfg_scale,
+        ).to(device)
+
     condition_encoder = MultiHotEncoder("objects.json", 256).to(device)
  
     optimizer = torch.optim.AdamW(
         list(model.parameters()) + list(condition_encoder.parameters()), 
-        lr=args.lr
+        lr=args.lr,
+        weight_decay=args.weight_decay,
     ) 
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
+
+    scaler = torch.amp.GradScaler(device)
+
     callbacks = [
         CheckpointCallback(args.latest_path, args.best_path),
         LoggerCallback(args.run_name, args, wandb_id=args.wandb_id)
@@ -112,15 +133,18 @@ def main(args):
 
     runner = Runner(
         model=model, 
+        ema_model=ema_model,
         condition_encoder=condition_encoder,
         train_loader=train_loader, 
         val_loader=val_loader, 
         optimizer=optimizer, 
         scheduler=scheduler, 
+        scaler=scaler,        
         device=device, 
         total_epoch=args.epochs, 
         validate_every_epoch=args.validate_every_epoch,
         cfg_p_uncond=args.cfg_p_uncond,
+        ema_beta=args.ema_beta,
         callbacks=callbacks,
         save_img_dir=args.save_img_dir,
         resume=args.resume,
@@ -141,9 +165,12 @@ def main(args):
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--epochs', type=int, default=1000)
-    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--batch-size', type=int, default=128)
+    parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
-
+    parser.add_argument('--weight-decay', type=float, default=1e-4)
+    parser.add_argument('--use-ema', action='store_true')
+    parser.add_argument('--ema-beta', type=float, default=0.995)
     parser.add_argument('--beta-start', type=float, default=1e-4)
     parser.add_argument('--beta-end', type=float, default=0.02)
     parser.add_argument('--T', type=int, default=1000)

@@ -24,12 +24,13 @@ class CheckpointCallback(Callback):
         self.path = os.path.join(os.path.dirname(self.path), f"epoch{epoch}.pt")
 
     def _save_checkpoint(self, ctx: RunnerContext):
-        if ctx.epoch <= 600 and ctx.epoch % 10 != 0:
+        if ctx.epoch % 100 != 0:
             return
 
         self._update_path(ctx.epoch)
         torch.save({
             'model': ctx.model.state_dict() if ctx.model is not None else None,
+            'ema_model': ctx.ema_model.state_dict() if ctx.ema_model is not None else None,
             'condition_encoder': ctx.condition_encoder.state_dict() if ctx.condition_encoder is not None else None,
             'optimizer': ctx.optimizer.state_dict() if ctx.optimizer is not None else None,
             'scheduler': ctx.scheduler.state_dict() if ctx.scheduler is not None else None,
@@ -45,7 +46,6 @@ class CheckpointCallback(Callback):
         
     def on_epoch_end(self, ctx: RunnerContext, isBest=False, **kwargs):
         self._save_checkpoint(ctx)
-        
         
         if isBest:
             self._save_checkpoint(ctx)

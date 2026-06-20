@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Datasets
+iclevr/
+
+# Generated outputs / artifacts
+results/
+results_img/
+
+# Model weights
+*.pth
+*.pt
