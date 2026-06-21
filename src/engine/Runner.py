@@ -36,7 +36,6 @@ class Runner:
                 condition_encoder: BaseConditionEncoder,
                 train_loader,
                 val_loader,
-                #test_loader,
                 optimizer,
                 scheduler,
                 scaler,

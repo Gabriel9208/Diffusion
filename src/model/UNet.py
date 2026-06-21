@@ -21,13 +21,16 @@ class AdaGN(nn.Module):
         super().__init__()
 
         self.gn = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels, affine=False)
-        self.proj = nn.Linear(emb_dim, 2 * num_channels)
+        self.time_proj = nn.Linear(emb_dim, 2 * num_channels)
+        self.label_proj = nn.Linear(emb_dim, 2 * num_channels)
 
-    def forward(self, x, emb=None):
+    def forward(self, x, time_emb, label_emb=None):
         x = self.gn(x)
-        if emb is not None:
-            gamma, beta = self.proj(emb).unsqueeze(2).unsqueeze(3).chunk(2, dim=1)
-            x = (1 + gamma) * x + beta
+        gamma, beta = self.time_proj(time_emb).unsqueeze(2).unsqueeze(3).chunk(2, dim=1)
+        if label_emb is not None:
+            lg, lb = self.label_proj(label_emb).unsqueeze(2).unsqueeze(3).chunk(2, dim=1)
+            gamma, beta = gamma + lg, beta + lb
+        x = (1 + gamma) * x + beta
         return x
 
 
@@ -39,8 +42,8 @@ class Block(nn.Module):
         self.silu = nn.SiLU()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
 
-    def forward(self, x, emb=None):
-        x = self.norm(x, emb)
+    def forward(self, x, time_emb, label_emb=None):
+        x = self.norm(x, time_emb, label_emb)
         x = self.silu(x)
         x = self.conv(x)
 
@@ -58,9 +61,9 @@ class ResBlock(nn.Module):
 
         nn.init.zeros_(self.block2.conv.weight)   # identity-at-init: zero-init last conv of residual branch
 
-    def forward(self, x, emb):
-        out = self.block1(x, emb)
-        out = self.block2(out, emb)
+    def forward(self, x, time_emb, label_emb):
+        out = self.block1(x, time_emb, label_emb)
+        out = self.block2(out, time_emb, label_emb)
         out = out + self.shortcut(x)
         return out
 
@@ -107,12 +110,12 @@ class UpBlock(nn.Module):
 
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
 
-    def forward(self, x, emb):
+    def forward(self, x, time_emb, label_emb):
         x = self.upsample(x)
-        x = self.block1(x, emb)
+        x = self.block1(x, time_emb, label_emb)
         if self.enable_attn:
             x = self.attn1(x)
-        x = self.block2(x, emb)
+        x = self.block2(x, time_emb, label_emb)
         if self.enable_attn:
             x = self.attn2(x)
 
@@ -130,12 +133,12 @@ class DownBlock(nn.Module):
 
         self.downsample = nn.MaxPool2d(kernel_size=2)
 
-    def forward(self, x, emb):
-        x = self.block1(x, emb)
+    def forward(self, x, time_emb, label_emb):
+        x = self.block1(x, time_emb, label_emb)
         if self.enable_attn:
             x = self.attn1(x)
 
-        x = self.block2(x, emb)
+        x = self.block2(x, time_emb, label_emb)
         if self.enable_attn:
             x = self.attn2(x)
 
@@ -152,6 +155,10 @@ class UNet(nn.Module):
             nn.GELU(),
             nn.Linear(emb_dim, emb_dim)
         )
+
+        # balance time / label conditioning scales before FiLM (see DiT / FiLM-LayerNorm)
+        self.time_norm = nn.LayerNorm(emb_dim)
+        self.label_norm = nn.LayerNorm(emb_dim)
 
         self.init_conv = nn.Conv2d(3, dim, kernel_size=3, padding=1)
 
@@ -171,23 +178,23 @@ class UNet(nn.Module):
         self.up4_out = nn.Conv2d(dim, 3, kernel_size=1, padding=0)
 
     def forward(self, x, t, label_emb):
-        time_emb = self.time_mlp(t).to(x.device)
-        emb = time_emb + label_emb
+        time_emb = self.time_norm(self.time_mlp(t).to(x.device))
+        label_emb = self.label_norm(label_emb)
 
         x = self.init_conv(x)
-        x1 = self.down1(x, emb)
-        x2 = self.down2(x1, emb)
-        x3 = self.down3(x2, emb)
-        x4 = self.down4(x3, emb)
+        x1 = self.down1(x, time_emb, label_emb)
+        x2 = self.down2(x1, time_emb, label_emb)
+        x3 = self.down3(x2, time_emb, label_emb)
+        x4 = self.down4(x3, time_emb, label_emb)
 
-        out = self.mid_block1(x4, emb)
+        out = self.mid_block1(x4, time_emb, label_emb)
         out = self.mid_attn(out)
-        out = self.mid_block2(out, emb)
+        out = self.mid_block2(out, time_emb, label_emb)
 
-        out = self.up1(torch.cat([x4, out], dim=1), emb)
-        out = self.up2(torch.cat([x3, out], dim=1), emb)
-        out = self.up3(torch.cat([x2, out], dim=1), emb)
-        out = self.up4(torch.cat([x1, out], dim=1), emb)
+        out = self.up1(torch.cat([x4, out], dim=1), time_emb, label_emb)
+        out = self.up2(torch.cat([x3, out], dim=1), time_emb, label_emb)
+        out = self.up3(torch.cat([x2, out], dim=1), time_emb, label_emb)
+        out = self.up4(torch.cat([x1, out], dim=1), time_emb, label_emb)
 
         return self.up4_out(out)
         
