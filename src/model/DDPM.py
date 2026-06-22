@@ -6,18 +6,24 @@ import numpy as np
 from model.UNet import UNet
 
 class DDPM(nn.Module):
-    def __init__(self, 
+    def __init__(self,
                  beta_start=1e-4,
                  beta_end=0.02,
                  T=1000,
                  device='cuda',
                  cfg_scale=2.0,
+                 thresholding="static",
+                 dynamic_thresholding_ratio=0.995,
+                 dim=64,
+                 emb_dim=256,
                  ):
         super().__init__()
-        self.model = UNet()
+        self.model = UNet(dim, emb_dim)
         self.T = T
         self.device = device
         self.cfg_scale = cfg_scale
+        self.thresholding = thresholding                              # "static" | "dynamic" | "none"
+        self.dynamic_thresholding_ratio = dynamic_thresholding_ratio
 
         betas = torch.linspace(beta_start, beta_end, T)
         #betas = self.cosine_beta_schedule()
@@ -52,7 +58,18 @@ class DDPM(nn.Module):
         sqrt_one_minus_alpha_bar_t = self.sqrt_one_minus_alpha_bar[t].unsqueeze(2).unsqueeze(3)
         
         return sqrt_alpha_bar_t * x_0 + sqrt_one_minus_alpha_bar_t * epsilon
-        
+
+    def _threshold_x0(self, x0):
+        if self.thresholding == "dynamic":
+            B = x0.shape[0]
+            s = torch.quantile(x0.reshape(B, -1).abs(),
+                               self.dynamic_thresholding_ratio, dim=1)   # per-image threshold
+            s = s.clamp(min=1.0).view(B, 1, 1, 1)                        # no outliers -> s=1 -> no-op
+            return x0.clamp(-s, s) / s                                   # clamp to [-s,s] then rescale to [-1,1]
+        if self.thresholding == "static":
+            return x0.clamp(-1, 1)
+        return x0  # "none"
+
     def forward(self, x_0, label_emb):
         N = x_0.shape[0]
         t = self.uniform_t(N)
@@ -94,6 +111,7 @@ class DDPM(nn.Module):
                 sqrt_one_minus_alpha_bar_t_minus_one = 0
             
             predicted_x_0 = (x_t - sqrt_one_minus_alpha_bar_t * eps) / sqrt_alpha_bar_t
+            predicted_x_0 = self._threshold_x0(predicted_x_0)
             predicted_x_0 *= sqrt_alpha_bar_t_minus_1
             direction_to_x_t = sqrt_one_minus_alpha_bar_t_minus_one * eps
             x_t = predicted_x_0 + direction_to_x_t 

@@ -97,11 +97,12 @@ def main(args):
     )
     
     model = DDPM(
-        beta_start=args.beta_start,   
+        beta_start=args.beta_start,
         beta_end=args.beta_end,
         T=args.T,
         device=device,
         cfg_scale=args.cfg_scale,
+        dim=args.dim,
     ).to(device)
 
     ema_model = None
@@ -112,6 +113,7 @@ def main(args):
             T=args.T,
             device=device,
             cfg_scale=args.cfg_scale,
+            dim=args.dim,
         ).to(device)
 
     condition_encoder = MultiHotEncoder("objects.json", 256).to(device)
@@ -174,7 +176,8 @@ if __name__ == '__main__':
     parser.add_argument('--beta-start', type=float, default=1e-4)
     parser.add_argument('--beta-end', type=float, default=0.02)
     parser.add_argument('--T', type=int, default=1000)
-    parser.add_argument('--cfg-scale', type=float, default=3)
+    parser.add_argument('--dim', type=int, default=64)            # UNet base width (multiple of 32)
+    parser.add_argument('--cfg-scale', type=float, default=1)
     parser.add_argument('--cfg-p-uncond', type=float, default=0.1)
     parser.add_argument('--validate-every-epoch', type=int, default=1)
     

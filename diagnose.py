@@ -120,7 +120,7 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device = {device}")
 
-    ddpm = DDPM(device=str(device)).to(device)
+    ddpm = DDPM(device=str(device), dim=args.dim).to(device)
     cond_enc = MultiHotEncoder("objects.json", 256).to(device)
 
     ckpt = torch.load(args.ckpt, map_location=device)
@@ -169,4 +169,5 @@ if __name__ == "__main__":
     p = ArgumentParser()
     p.add_argument("--ckpt", default="checkpoint.pth")
     p.add_argument("--n", type=int, default=8)
+    p.add_argument("--dim", type=int, default=64)
     main(p.parse_args())

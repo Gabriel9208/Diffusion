@@ -23,7 +23,7 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device = {device}, cfg_scale = {args.cfg}")
 
-    ddpm = DDPM(device=str(device), cfg_scale=args.cfg).to(device)
+    ddpm = DDPM(device=str(device), cfg_scale=args.cfg, thresholding=args.thresholding, dim=args.dim).to(device)
     cond_enc = MultiHotEncoder("objects.json", 256).to(device)
 
     ckpt = torch.load(args.ckpt, map_location=device)
@@ -54,4 +54,6 @@ if __name__ == "__main__":
     p.add_argument("--ckpt", default="results/epoch1000.pt")
     p.add_argument("--prompts", default="new_test.json")
     p.add_argument("--cfg", type=float, default=3.0)
+    p.add_argument("--thresholding", default="static", choices=["static", "dynamic", "none"])
+    p.add_argument("--dim", type=int, default=64)
     main(p.parse_args())
