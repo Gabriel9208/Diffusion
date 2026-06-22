@@ -167,7 +167,7 @@ def main(args):
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--epochs', type=int, default=1000)
-    parser.add_argument('--batch-size', type=int, default=128)
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
@@ -176,7 +176,7 @@ if __name__ == '__main__':
     parser.add_argument('--beta-start', type=float, default=1e-4)
     parser.add_argument('--beta-end', type=float, default=0.02)
     parser.add_argument('--T', type=int, default=1000)
-    parser.add_argument('--dim', type=int, default=64)            # UNet base width (multiple of 32)
+    parser.add_argument('--dim', type=int, default=128)            # UNet base width (multiple of 32)
     parser.add_argument('--cfg-scale', type=float, default=1)
     parser.add_argument('--cfg-p-uncond', type=float, default=0.1)
     parser.add_argument('--validate-every-epoch', type=int, default=1)
